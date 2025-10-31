@@ -1,3 +1,4 @@
+# app.py
 import streamlit as st
 import pickle
 import pandas as pd
@@ -5,68 +6,110 @@ import requests
 from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
+st.set_page_config(page_title="Movie Recommender", layout="wide")
+st.title("Movie Recommender — (uses movies_dict1.pkl)")
+
+# ----- helper: fetch poster from TMDB -----
+TMDB_API_KEY = "8265bd1679663a7ea12ac168da84d2e8"  # you can replace with your secret later
 
 def fetch_poster(movie_id):
     try:
-        url = f"https://api.themoviedb.org/3/movie/{movie_id}?api_key=8265bd1679663a7ea12ac168da84d2e8&language=en-US"
-        data = requests.get(url).json()
+        if not movie_id:
+            raise ValueError("no movie_id")
+        url = f"https://api.themoviedb.org/3/movie/{movie_id}?api_key={TMDB_API_KEY}&language=en-US"
+        data = requests.get(url, timeout=5).json()
         poster_path = data.get('poster_path')
         if poster_path:
             return "https://image.tmdb.org/t/p/w500/" + poster_path
+    except Exception:
+        pass
+    # fallback image if anything fails
+    return "https://via.placeholder.com/500x750?text=No+Image"
+
+# ----- load movies_dict1.pkl -----
+@st.cache_data(show_spinner=False)
+def load_movies(path="movies_dict1.pkl"):
+    try:
+        with open(path, "rb") as f:
+            obj = pickle.load(f)
+        # if the object is a dict of lists or list of dicts, convert to DataFrame
+        if isinstance(obj, dict):
+            movies_df = pd.DataFrame(obj)
+        elif isinstance(obj, list):
+            movies_df = pd.DataFrame(obj)
+        elif isinstance(obj, pd.DataFrame):
+            movies_df = obj
         else:
-            return "https://via.placeholder.com/500x750?text=No+Image"
-    except:
-        return "https://via.placeholder.com/500x750?text=No+Image"
+            # try to coerce
+            movies_df = pd.DataFrame(obj)
+        return movies_df
+    except FileNotFoundError:
+        st.error(f"File not found: {path}. Make sure movies_dict1.pkl is in the repo root.")
+        st.stop()
+    except Exception as e:
+        st.error("Error loading movies_dict1.pkl")
+        st.exception(e)
+        st.stop()
 
+movies = load_movies()
 
-st.title("Movie Recommender System")
+st.write(f"Loaded {len(movies)} movies (showing first 5 rows):")
+st.dataframe(movies.head())
 
-try:
-    movies_dict = pickle.load(open('movies_dict1.pkl', 'rb'))
-    movies = pd.DataFrame(movies_dict)
-except Exception as e:
-    st.error("Error loading movies_dict1.pkl — make sure it's in the same folder as app.py")
-    st.stop()
-
-
-required_cols = ['title', 'genres', 'overview', 'keywords', 'cast', 'crew']
-for col in required_cols:
+# fill missing expected text columns
+for col in ['title','genres','overview','keywords','cast','crew','movie_id']:
     if col not in movies.columns:
         movies[col] = ""
 
-movies['combined'] = movies['genres'] + " " + movies['overview'] + " " + movies['keywords'] + " " + movies['cast'] + " " + movies['crew']
+# ----- prepare combined text and similarity -----
+@st.cache_data(show_spinner=False)
+def build_similarity(df):
+    df = df.copy()
+    df['combined'] = (df['genres'].fillna('') + " " +
+                      df['overview'].fillna('') + " " +
+                      df['keywords'].fillna('') + " " +
+                      df['cast'].fillna('') + " " +
+                      df['crew'].fillna(''))
+    cv = CountVectorizer(max_features=5000, stop_words='english')
+    vectors = cv.fit_transform(df['combined'])
+    sim = cosine_similarity(vectors)
+    return sim
 
+with st.spinner("Computing similarity (first run may take a few seconds)..."):
+    similarity = build_similarity(movies)
 
-cv = CountVectorizer(max_features=5000, stop_words='english')
-vectors = cv.fit_transform(movies['combined'].fillna(''))
-similarity = cosine_similarity(vectors)
-
-def recommend(movie):
-    if movie not in movies['title'].values:
-        st.error("Movie not found in database!")
+# ----- recommendation function -----
+def recommend(movie_title, top_n=5):
+    if movie_title not in movies['title'].values:
+        st.warning("Selected movie not in dataset")
         return [], []
-    index = movies[movies['title'] == movie].index[0]
-    distances = sorted(list(enumerate(similarity[index])), reverse=True, key=lambda x: x[1])[1:6]
-    
-    recommended_movie_names = []
-    recommended_movie_posters = []
-    
-    for i in distances:
-        movie_id = movies.iloc[i[0]].get('movie_id', None)
-        recommended_movie_names.append(movies.iloc[i[0]].title)
-        if movie_id:
-            recommended_movie_posters.append(fetch_poster(movie_id))
-        else:
-            recommended_movie_posters.append("https://via.placeholder.com/500x750?text=No+Image")
-            
-    return recommended_movie_names, recommended_movie_posters
+    idx = movies[movies['title'] == movie_title].index[0]
+    scores = list(enumerate(similarity[idx]))
+    scores = sorted(scores, key=lambda x: x[1], reverse=True)
+    results = scores[1: top_n+1]  # skip the same movie
+    names = []
+    posters = []
+    for i, _ in results:
+        names.append(movies.iloc[i]['title'])
+        movie_id = movies.iloc[i].get('movie_id', None)
+        try:
+            # movie_id could be numeric or string; handle gracefully
+            posters.append(fetch_poster(int(movie_id)) if movie_id else fetch_poster(None))
+        except Exception:
+            posters.append(fetch_poster(None))
+    return names, posters
 
-selected_movie = st.selectbox("Select a movie to get recommendations:", movies['title'].values)
+# ----- Streamlit UI -----
+movie_list = movies['title'].values
+selected_movie = st.selectbox("Type or select a movie:", movie_list)
 
-if st.button('Show Recommendations'):
-    recommended_movie_names, recommended_movie_posters = recommend(selected_movie)
-    cols = st.columns(5)
-    for i in range(5):
-        with cols[i]:
-            st.text(recommended_movie_names[i])
-            st.image(recommended_movie_posters[i])
+if st.button("Show Recommendations"):
+    names, posters = recommend(selected_movie)
+    if not names:
+        st.info("No recommendations found.")
+    else:
+        cols = st.columns(len(names))
+        for col, name, poster in zip(cols, names, posters):
+            with col:
+                st.text(name)
+                st.image(poster, use_column_width=True)
