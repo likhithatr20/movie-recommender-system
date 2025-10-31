@@ -1,105 +1,120 @@
-# app.py
+# app.py  (replace your current file with this)
 import streamlit as st
 import pickle
 import pandas as pd
 import requests
-from sklearn.feature_extraction.text import CountVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
+import os
+from functools import lru_cache
 
-st.set_page_config(page_title="Movie Recommender", layout="wide")
-st.title("Movie Recommender — (uses movies_dict1.pkl)")
+st.set_page_config(page_title="Movie Recommender (no sklearn)", layout="wide")
+st.title(" Movie Recommender (uses movies_dict1.pkl — no scikit-learn)")
 
-# ----- helper: fetch poster from TMDB -----
-TMDB_API_KEY = "8265bd1679663a7ea12ac168da84d2e8"  # you can replace with your secret later
+# TMDB API key (replace with your own in Streamlit Secrets if you prefer)
+TMDB_API_KEY = "8265bd1679663a7ea12ac168da84d2e8"
 
 def fetch_poster(movie_id):
     try:
         if not movie_id:
-            raise ValueError("no movie_id")
-        url = f"https://api.themoviedb.org/3/movie/{movie_id}?api_key={TMDB_API_KEY}&language=en-US"
+            return "https://via.placeholder.com/500x750?text=No+Image"
+        url = f"https://api.themoviedb.org/3/movie/{int(movie_id)}?api_key={TMDB_API_KEY}&language=en-US"
         data = requests.get(url, timeout=5).json()
-        poster_path = data.get('poster_path')
+        poster_path = data.get("poster_path")
         if poster_path:
             return "https://image.tmdb.org/t/p/w500/" + poster_path
     except Exception:
         pass
-    # fallback image if anything fails
     return "https://via.placeholder.com/500x750?text=No+Image"
 
-# ----- load movies_dict1.pkl -----
+# Load movies_dict1.pkl
 @st.cache_data(show_spinner=False)
 def load_movies(path="movies_dict1.pkl"):
-    try:
-        with open(path, "rb") as f:
-            obj = pickle.load(f)
-        # if the object is a dict of lists or list of dicts, convert to DataFrame
-        if isinstance(obj, dict):
-            movies_df = pd.DataFrame(obj)
-        elif isinstance(obj, list):
-            movies_df = pd.DataFrame(obj)
-        elif isinstance(obj, pd.DataFrame):
-            movies_df = obj
-        else:
-            # try to coerce
-            movies_df = pd.DataFrame(obj)
-        return movies_df
-    except FileNotFoundError:
+    if not os.path.exists(path):
         st.error(f"File not found: {path}. Make sure movies_dict1.pkl is in the repo root.")
         st.stop()
-    except Exception as e:
-        st.error("Error loading movies_dict1.pkl")
-        st.exception(e)
-        st.stop()
+    with open(path, "rb") as f:
+        obj = pickle.load(f)
+    if isinstance(obj, pd.DataFrame):
+        df = obj
+    elif isinstance(obj, dict):
+        df = pd.DataFrame(obj)
+    elif isinstance(obj, list):
+        df = pd.DataFrame(obj)
+    else:
+        df = pd.DataFrame(obj)
+    return df
 
 movies = load_movies()
-
-st.write(f"Loaded {len(movies)} movies (showing first 5 rows):")
+st.write(f"Loaded {len(movies)} movies.")
 st.dataframe(movies.head())
 
-# fill missing expected text columns
+# Ensure expected columns exist
 for col in ['title','genres','overview','keywords','cast','crew','movie_id']:
     if col not in movies.columns:
         movies[col] = ""
 
-# ----- prepare combined text and similarity -----
+# Simple tokenizer + stopword removal (small builtin list)
+STOPWORDS = set([
+    'the','a','an','and','or','of','in','on','with','to','for','by','from','is','are','was','were','it',
+    'this','that','as','at','be','has','have','had','but','not','its'
+])
+
+def tokenize(text):
+    if not isinstance(text, str):
+        return set()
+    # basic cleanup
+    text = text.lower()
+    # replace non-alphanumeric with spaces
+    for ch in ['/', '-', '_', '.', ',', ':', ';', '(', ')', '[', ']','"','\'','?','!','&']:
+        text = text.replace(ch, ' ')
+    toks = [t.strip() for t in text.split() if t.strip() and t not in STOPWORDS]
+    return set(toks)
+
 @st.cache_data(show_spinner=False)
-def build_similarity(df):
-    df = df.copy()
-    df['combined'] = (df['genres'].fillna('') + " " +
-                      df['overview'].fillna('') + " " +
-                      df['keywords'].fillna('') + " " +
-                      df['cast'].fillna('') + " " +
-                      df['crew'].fillna(''))
-    cv = CountVectorizer(max_features=5000, stop_words='english')
-    vectors = cv.fit_transform(df['combined'])
-    sim = cosine_similarity(vectors)
-    return sim
+def build_token_sets(df):
+    combined = (df['genres'].fillna('') + " " +
+                df['overview'].fillna('') + " " +
+                df['keywords'].fillna('') + " " +
+                df['cast'].fillna('') + " " +
+                df['crew'].fillna(''))
+    token_sets = [tokenize(text) for text in combined]
+    return token_sets
 
-with st.spinner("Computing similarity (first run may take a few seconds)..."):
-    similarity = build_similarity(movies)
+with st.spinner("Preparing token sets..."):
+    token_sets = build_token_sets(movies)
 
-# ----- recommendation function -----
+# Jaccard similarity function
+def jaccard(a:set, b:set):
+    if not a and not b:
+        return 0.0
+    inter = len(a & b)
+    union = len(a | b)
+    return inter / union if union else 0.0
+
 def recommend(movie_title, top_n=5):
     if movie_title not in movies['title'].values:
-        st.warning("Selected movie not in dataset")
+        st.warning("Selected movie not in dataset.")
         return [], []
-    idx = movies[movies['title'] == movie_title].index[0]
-    scores = list(enumerate(similarity[idx]))
-    scores = sorted(scores, key=lambda x: x[1], reverse=True)
-    results = scores[1: top_n+1]  # skip the same movie
-    names = []
+    idx = int(movies[movies['title'] == movie_title].index[0])
+    base_set = token_sets[idx]
+    scores = []
+    for i, s in enumerate(token_sets):
+        if i == idx:
+            continue
+        score = jaccard(base_set, s)
+        scores.append((i, score))
+    scores.sort(key=lambda x: x[1], reverse=True)
+    top = scores[:top_n]
+    names = [movies.iloc[i]['title'] for i, _ in top]
     posters = []
-    for i, _ in results:
-        names.append(movies.iloc[i]['title'])
+    for i, _ in top:
         movie_id = movies.iloc[i].get('movie_id', None)
         try:
-            # movie_id could be numeric or string; handle gracefully
             posters.append(fetch_poster(int(movie_id)) if movie_id else fetch_poster(None))
         except Exception:
             posters.append(fetch_poster(None))
     return names, posters
 
-# ----- Streamlit UI -----
+# UI
 movie_list = movies['title'].values
 selected_movie = st.selectbox("Type or select a movie:", movie_list)
 
