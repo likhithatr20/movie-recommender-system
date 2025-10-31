@@ -8,7 +8,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 movies_dict = pickle.load(open('movies_dict1.pkl', 'rb'))
 movies = pd.DataFrame(movies_dict)
 
-st.title(" Movie Recommender System (No Pre-Trained Model)")
+st.title(" Movie Recommender System ")
 
 # Convert tags/overview into feature vectors
 cv = CountVectorizer(max_features=5000, stop_words='english')
@@ -42,4 +42,5 @@ if st.button('Recommend'):
     st.write("Recommended Movies:")
     for i, movie in enumerate(recommendations, 1):
         st.write(f"{i}. {movie}")
+
 
