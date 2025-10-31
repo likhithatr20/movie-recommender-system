@@ -1,15 +1,13 @@
-# app.py  (replace your current file with this)
+# app.py  (no sklearn required)
 import streamlit as st
 import pickle
 import pandas as pd
 import requests
 import os
-from functools import lru_cache
 
 st.set_page_config(page_title="Movie Recommender (no sklearn)", layout="wide")
-st.title(" Movie Recommender (uses movies_dict1.pkl — no scikit-learn)")
+st.title("🎬 Movie Recommender (uses movies_dict1.pkl — no scikit-learn)")
 
-# TMDB API key (replace with your own in Streamlit Secrets if you prefer)
 TMDB_API_KEY = "8265bd1679663a7ea12ac168da84d2e8"
 
 def fetch_poster(movie_id):
@@ -25,7 +23,6 @@ def fetch_poster(movie_id):
         pass
     return "https://via.placeholder.com/500x750?text=No+Image"
 
-# Load movies_dict1.pkl
 @st.cache_data(show_spinner=False)
 def load_movies(path="movies_dict1.pkl"):
     if not os.path.exists(path):
@@ -47,23 +44,16 @@ movies = load_movies()
 st.write(f"Loaded {len(movies)} movies.")
 st.dataframe(movies.head())
 
-# Ensure expected columns exist
 for col in ['title','genres','overview','keywords','cast','crew','movie_id']:
     if col not in movies.columns:
         movies[col] = ""
 
-# Simple tokenizer + stopword removal (small builtin list)
-STOPWORDS = set([
-    'the','a','an','and','or','of','in','on','with','to','for','by','from','is','are','was','were','it',
-    'this','that','as','at','be','has','have','had','but','not','its'
-])
+STOPWORDS = set(['the','a','an','and','or','of','in','on','with','to','for','by','from','is','are','was','were','it','this','that','as','at','be','has','have','had','but','not','its'])
 
 def tokenize(text):
     if not isinstance(text, str):
         return set()
-    # basic cleanup
     text = text.lower()
-    # replace non-alphanumeric with spaces
     for ch in ['/', '-', '_', '.', ',', ':', ';', '(', ')', '[', ']','"','\'','?','!','&']:
         text = text.replace(ch, ' ')
     toks = [t.strip() for t in text.split() if t.strip() and t not in STOPWORDS]
@@ -82,7 +72,6 @@ def build_token_sets(df):
 with st.spinner("Preparing token sets..."):
     token_sets = build_token_sets(movies)
 
-# Jaccard similarity function
 def jaccard(a:set, b:set):
     if not a and not b:
         return 0.0
@@ -114,7 +103,6 @@ def recommend(movie_title, top_n=5):
             posters.append(fetch_poster(None))
     return names, posters
 
-# UI
 movie_list = movies['title'].values
 selected_movie = st.selectbox("Type or select a movie:", movie_list)
 
